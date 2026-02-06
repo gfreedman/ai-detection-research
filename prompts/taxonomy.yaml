@@ -1,0 +1,166 @@
+# ── Prompt Taxonomy ─────────────────────────────────────────────────────────────
+# Each dimension is an independent variable for ablation testing.
+# Variant "a" in every dimension is the baseline (no modification).
+#
+# Fields:
+#   label           — human-readable name for logging/plots
+#   system_prompt   — passed as the Gemini system instruction (empty = none)
+#   user_prompt_prefix — prepended to the topic string in the user prompt
+#   user_prompt_suffix — appended after the topic string in the user prompt
+#
+# For Tier 6 (generation parameters), the variants specify temperature/top_p
+# instead of prompt text. The experiment runner handles these separately.
+
+dimensions:
+  # ── Tier 1: Voice & Persona ──────────────────────────────────────────────────
+  persona:
+    P1a:
+      label: "No persona"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: ""
+    P1b:
+      label: "Teen student"
+      system_prompt: "You are Alex, a 16-year-old writing for AP English."
+      user_prompt_prefix: ""
+      user_prompt_suffix: ""
+    P1c:
+      label: "B+ student"
+      system_prompt: "You are a B+ student who writes well but not perfectly. You sometimes lose your train of thought and your conclusions tend to trail off."
+      user_prompt_prefix: ""
+      user_prompt_suffix: ""
+    P1d:
+      label: "Full persona"
+      system_prompt: "You are Jamie, a 17-year-old junior at Lincoln High School. You're in Ms. Perkins' AP Lang class. You got a B+ on your last essay and you're trying to do better this time. You tend to start strong but rush your endings because you procrastinate."
+      user_prompt_prefix: ""
+      user_prompt_suffix: ""
+
+  # ── Tier 2: Structural Directives ────────────────────────────────────────────
+  structure:
+    P2a:
+      label: "No structure guidance"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: ""
+    P2b:
+      label: "Avoid 5-paragraph"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Don't use a 5-paragraph essay structure."
+    P2c:
+      label: "In medias res"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Start in the middle of a thought. End abruptly, as if you ran out of time."
+    P2d:
+      label: "Irregular paragraphs"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Use 2-3 very short paragraphs and one long rambling one."
+
+  # ── Tier 3: Linguistic Texture ───────────────────────────────────────────────
+  texture:
+    P3a:
+      label: "No texture guidance"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: ""
+    P3b:
+      label: "Varied sentence length"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Vary sentence length dramatically — mix 4-word fragments with 35-word run-ons."
+    P3c:
+      label: "Hedging language"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Include hedging language throughout: 'I think', 'probably', 'sort of', 'I'm not sure but'."
+    P3d:
+      label: "Minor errors"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Include 1-2 minor grammatical errors and one awkward transition between paragraphs."
+    P3e:
+      label: "Colloquialisms"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Include a colloquialism or slang term that a teenager would naturally use."
+
+  # ── Tier 4: Content Specificity ──────────────────────────────────────────────
+  content:
+    P4a:
+      label: "Generic topic"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: ""
+    P4b:
+      label: "Personal experience"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Reference a specific personal experience related to the topic."
+    P4c:
+      label: "Obscure source"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Mention a real but obscure source you 'read in class' as if recalling it from memory."
+    P4d:
+      label: "Misremembered stat"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Include a slightly wrong statistic that a student might misremember from a textbook."
+
+  # ── Tier 5: Meta-Instructions ────────────────────────────────────────────────
+  meta:
+    P5a:
+      label: "No meta-instructions"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: ""
+    P5b:
+      label: "Rough draft"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "This is a rough first draft. Don't over-polish it."
+    P5c:
+      label: "Night before"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "You're writing this the night before it's due. You're tired and rushing a bit."
+    P5d:
+      label: "Write like human"
+      system_prompt: ""
+      user_prompt_prefix: ""
+      user_prompt_suffix: "Write like a human, not like an AI."
+
+  # ── Tier 6: Generation Parameters ───────────────────────────────────────────
+  # These don't modify the prompt — the experiment runner reads temperature/top_p.
+  gen_params:
+    P6a:
+      label: "Baseline params"
+      temperature: 0.7
+      top_p: 0.9
+    P6b:
+      label: "Moderate randomness"
+      temperature: 1.0
+      top_p: 0.95
+    P6c:
+      label: "High randomness"
+      temperature: 1.3
+      top_p: 0.98
+    P6d:
+      label: "Max randomness"
+      temperature: 1.5
+      top_p: 1.0
+
+# ── Topics (control variable) ─────────────────────────────────────────────────
+topics:
+  - "Write a 500-word essay about how social media affects teen mental health."
+  - "Write a 500-word essay arguing whether school uniforms should be required."
+  - "Write a 500-word essay about a book that changed your perspective."
+  - "Write a 500-word essay about climate change and what your generation can do."
+  - "Write a 500-word essay about whether standardized testing is fair."
+
+# ── Composite Prompts ──────────────────────────────────────────────────────────
+# Filled in after ablation results — combine top performers from each tier.
+# Format: list of {label, components (list of variant IDs), gen_params (variant ID)}
+composite_prompts: []
