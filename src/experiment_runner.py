@@ -1,4 +1,32 @@
-"""Orchestrator: generate essays → detect AI → log results to JSONL."""
+"""
+Orchestrator: generate essays -> detect AI -> log results to JSONL.
+
+This module implements the four-phase experimental pipeline:
+
+1. **Human baselines** -- run real student essays through the detector to
+   establish the false-positive rate.
+2. **Gen-params sweep** (Tier 6) -- vary temperature/top_p while keeping the
+   prompt fixed, to find the optimal generation parameters.
+3. **Ablations** (Tiers 1-5) -- test every prompt variant in each dimension
+   at the best temperature from the sweep.
+4. **Composite prompts** -- combine the top performers from each tier and test
+   the combined prompts with a higher N.
+
+All results are appended to a JSONL file (one JSON object per line) so that
+partial runs survive crashes and the file never needs to be held in memory.
+
+Data Classes
+------------
+- :class:`RunRecord` -- one row of experimental output (a single JSONL line).
+
+Functions
+---------
+- :func:`_log_record`       -- append a :class:`RunRecord` to the JSONL file.
+- :func:`_build_record`     -- assemble a :class:`RunRecord` from generation +
+  detection outputs.
+- :func:`_short`            -- truncate a topic string for log readability.
+- :func:`_log_phase_summary` -- emit an INFO log summarising a completed phase.
+"""
 
 from __future__ import annotations
 
@@ -22,14 +50,54 @@ from src.prompt_registry import (
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Data class: one row of experimental output
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class RunRecord:
-    """One row of experimental output, written as a single JSONL line."""
+    """
+    One row of experimental output, written as a single JSONL line.
+
+    Every field is a flat, JSON-serialisable value so the record can be dumped
+    directly with ``json.dumps(asdict(record))``.
+
+    @param timestamp:            ISO-8601 UTC timestamp of the run.
+    @param phase:                Experiment phase (``"human_baseline"``,
+                                 ``"gen_params_sweep"``, ``"ablation"``,
+                                 ``"composite"``).
+    @param dimension:            Prompt dimension (e.g. ``"persona"``,
+                                 ``"gen_params"``, ``"composite"``).
+    @param variant_id:           Variant identifier (e.g. ``"P1b"``).
+    @param variant_label:        Human-readable variant name.
+    @param topic:                Essay topic used for this run.
+    @param run_index:            0-based run counter within this variant/topic.
+
+    @param model:                Gemini model used (``None`` for human baselines).
+    @param temperature:          Sampling temperature (``None`` for baselines).
+    @param top_p:                Nucleus-sampling threshold (``None`` for baselines).
+    @param top_k:                Top-k cutoff (``None`` for baselines).
+    @param word_count:           Word count of the essay.
+    @param generation_latency_ms: API latency in milliseconds (``None`` for baselines).
+    @param generation_attempts:  Number of generation attempts (``None`` for baselines).
+
+    @param essay_text:           The full essay text.
+
+    @param detector:             Detector name (e.g. ``"gptzero"``, ``"zerogpt"``).
+    @param overall_ai_prob:      Detector's overall AI probability (0-1).
+    @param burstiness:           Burstiness score (``None`` if not reported).
+    @param flagged_sentence_pct: Percentage of sentences flagged as AI.
+    @param passes_threshold:     ``True`` if ``overall_ai_prob < DETECTION_PASS_THRESHOLD``.
+
+    @param system_prompt:        Exact system prompt used (for reproducibility).
+    @param user_prompt:          Exact user prompt used (for reproducibility).
+    """
 
     timestamp: str
-    phase: str  # "human_baseline", "gen_params_sweep", "ablation", "composite"
-    dimension: str  # e.g. "persona", "gen_params", "composite"
-    variant_id: str  # e.g. "P1b", "composite_1", "human_baseline"
+    phase: str
+    dimension: str
+    variant_id: str
     variant_label: str
     topic: str
     run_index: int
@@ -53,14 +121,28 @@ class RunRecord:
     flagged_sentence_pct: float
     passes_threshold: bool
 
-    # Full system/user prompts used (for reproducibility)
+    # Full prompts used (for reproducibility)
     system_prompt: str
     user_prompt: str
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def _log_record(record: RunRecord, output_path: Path) -> None:
-    """Append a RunRecord as a JSON line to the output file."""
+    """
+    Append a :class:`RunRecord` as a JSON line to the output file.
+
+    Creates the parent directory if it does not exist.
+
+    @param record:      The record to serialise and append.
+    @param output_path: Path to the JSONL file.
+    """
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
     with open(output_path, "a") as f:
         f.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
 
@@ -79,6 +161,27 @@ def _build_record(
     det_result: DetectorResult,
     detector_name: str,
 ) -> RunRecord:
+    """
+    Assemble a :class:`RunRecord` from generation and detection outputs.
+
+    For human baselines *gen_result* is ``None`` and all generation-related
+    fields are set accordingly.
+
+    @param phase:          Experiment phase identifier.
+    @param dimension:      Prompt dimension name.
+    @param variant_id:     Variant identifier.
+    @param variant_label:  Human-readable variant label.
+    @param topic:          Essay topic string.
+    @param run_index:      0-based run counter.
+    @param system_prompt:  System prompt that was used.
+    @param user_prompt:    User prompt that was used.
+    @param essay_text:     The essay text (generated or human-written).
+    @param gen_result:     Generation metadata (``None`` for human baselines).
+    @param det_result:     Detection result from the detector.
+    @param detector_name:  Short name of the detector (e.g. ``"gptzero"``).
+    @returns:              A fully populated :class:`RunRecord`.
+    """
+
     return RunRecord(
         timestamp=datetime.now(timezone.utc).isoformat(),
         phase=phase,
@@ -87,6 +190,8 @@ def _build_record(
         variant_label=variant_label,
         topic=topic,
         run_index=run_index,
+
+        # Generation metadata -- None for human baselines
         model=gen_result.model if gen_result else None,
         temperature=gen_result.params.temperature if gen_result else None,
         top_p=gen_result.params.top_p if gen_result else None,
@@ -94,19 +199,78 @@ def _build_record(
         word_count=gen_result.word_count if gen_result else len(essay_text.split()),
         generation_latency_ms=gen_result.latency_ms if gen_result else None,
         generation_attempts=gen_result.attempts if gen_result else None,
+
+        # Essay + detection
         essay_text=essay_text,
         detector=detector_name,
         overall_ai_prob=det_result.overall_ai_prob,
         burstiness=det_result.burstiness,
         flagged_sentence_pct=det_result.flagged_sentence_pct,
         passes_threshold=det_result.overall_ai_prob < config.DETECTION_PASS_THRESHOLD,
+
+        # Prompts (for reproducibility)
         system_prompt=system_prompt,
         user_prompt=user_prompt,
     )
 
 
+def _short(topic: str, max_len: int = 40) -> str:
+    """
+    Truncate a topic string for log readability.
+
+    @param topic:   The full topic string.
+    @param max_len: Maximum character length before truncation.
+    @returns:       The truncated string, with ``"..."`` appended if shortened.
+    """
+
+    return topic[:max_len] + "..." if len(topic) > max_len else topic
+
+
+def _log_phase_summary(phase: str, records: list[RunRecord]) -> None:
+    """
+    Emit an INFO log line summarising the results of a completed phase.
+
+    Reports total runs, mean AI probability, and pass rate.
+
+    @param phase:   Phase name for the log prefix.
+    @param records: All :class:`RunRecord` objects from the phase.
+    """
+
+    if not records:
+        return
+
+    probs = [r.overall_ai_prob for r in records]
+    passing = sum(1 for r in records if r.passes_threshold)
+
+    logger.info(
+        "%s complete: %d runs, mean AI prob %.3f, pass rate %d/%d (%.0f%%)",
+        phase,
+        len(records),
+        sum(probs) / len(probs),
+        passing,
+        len(records),
+        passing / len(records) * 100,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Experiment runner
+# ---------------------------------------------------------------------------
+
+
 class ExperimentRunner:
-    """Runs the full experimental pipeline: generate → detect → log."""
+    """
+    Runs the full experimental pipeline: generate -> detect -> log.
+
+    The runner coordinates the :class:`GeminiClient`, a :class:`DetectorClient`,
+    and the :class:`PromptRegistry` to execute each phase of the experiment.
+    All results are appended to a JSONL file as they are produced.
+
+    Usage::
+
+        runner = ExperimentRunner(gemini, detector, registry)
+        results = runner.run_full_pipeline(best_temperature=1.0, best_top_p=0.95)
+    """
 
     def __init__(
         self,
@@ -116,34 +280,65 @@ class ExperimentRunner:
         output_path: Path | None = None,
         rate_limit_delay: float = config.RATE_LIMIT_DELAY_S,
     ):
+        """
+        Initialise the experiment runner.
+
+        @param gemini:           A configured :class:`GeminiClient` for essay generation.
+        @param detector:         A configured :class:`DetectorClient` for AI detection.
+        @param registry:         The :class:`PromptRegistry` with loaded taxonomy.
+        @param output_path:      Path to the JSONL results file.  Defaults to
+                                 ``config.RAW_RESULTS_PATH``.
+        @param rate_limit_delay: Seconds to sleep between consecutive API calls
+                                 to respect rate limits.
+        """
+
         self._gemini = gemini
         self._detector = detector
         self._registry = registry
         self._output_path = output_path or config.RAW_RESULTS_PATH
         self._delay = rate_limit_delay
 
-    # ── Phase 1: Human Baselines ───────────────────────────────────────────────
+    # ── Phase 1: Human Baselines ───────────────────────────────────────────
 
-    def run_human_baselines(self, baselines_dir: Path | None = None) -> list[RunRecord]:
-        """Run human-written essays through the detector for calibration.
-
-        Reads all .txt files from the baselines directory. Each file is one essay.
-        The filename (without extension) is used as the topic identifier.
+    def run_human_baselines(
+        self,
+        baselines_dir: Path | None = None,
+    ) -> list[RunRecord]:
         """
+        Run human-written essays through the detector for calibration.
+
+        Reads all ``.txt`` files from *baselines_dir*.  Each file is treated as
+        one essay; the filename (without extension) becomes the topic identifier.
+
+        @param baselines_dir: Directory containing ``.txt`` essay files.
+                              Defaults to ``config.HUMAN_BASELINES_DIR``.
+        @returns: A list of :class:`RunRecord` objects (one per essay).
+        """
+
         bdir = baselines_dir or config.HUMAN_BASELINES_DIR
         txt_files = sorted(bdir.glob("*.txt"))
+
         if not txt_files:
-            logger.warning("No .txt files found in %s — skipping human baselines.", bdir)
+            logger.warning(
+                "No .txt files found in %s -- skipping human baselines.", bdir
+            )
             return []
 
         records: list[RunRecord] = []
+
         for i, path in enumerate(txt_files):
+
             text = path.read_text().strip()
             topic_label = path.stem
 
-            logger.info("Human baseline %d/%d: %s", i + 1, len(txt_files), topic_label)
+            logger.info(
+                "Human baseline %d/%d: %s", i + 1, len(txt_files), topic_label
+            )
+
+            # -- Detect the human essay -------------------------------------
             det = self._detector.check(text)
 
+            # -- Build and persist the record -------------------------------
             record = _build_record(
                 phase="human_baseline",
                 dimension="human",
@@ -158,6 +353,7 @@ class ExperimentRunner:
                 det_result=det,
                 detector_name=self._detector.name,
             )
+
             _log_record(record, self._output_path)
             records.append(record)
             time.sleep(self._delay)
@@ -167,20 +363,27 @@ class ExperimentRunner:
             len(records),
             sum(r.overall_ai_prob for r in records) / len(records) if records else 0,
         )
+
         return records
 
-    # ── Phase 2: Temperature / Gen-Params Sweep ────────────────────────────────
+    # ── Phase 2: Temperature / Gen-Params Sweep ────────────────────────────
 
     def run_gen_params_sweep(
         self,
         topics: list[str] | None = None,
         n_runs: int = config.RUNS_PER_VARIANT,
     ) -> list[RunRecord]:
-        """Sweep Tier 6 generation parameters across all topics.
+        """
+        Sweep Tier 6 generation parameters across all topics.
 
         Uses the baseline prompt (no persona, no texture, etc.) so the only
-        variable is temperature/top_p.
+        independent variable is temperature/top_p.
+
+        @param topics: Override the default topic list.
+        @param n_runs: Number of runs per variant per topic.
+        @returns:      A list of :class:`RunRecord` objects.
         """
+
         topics = topics or self._registry.topics
         gp_variants = self._registry.get_gen_params_variants()
         baseline_prompt = self._registry.get_baseline("persona")
@@ -192,6 +395,7 @@ class ExperimentRunner:
         for gp in gp_variants:
             for topic in topics:
                 for run in range(n_runs):
+
                     done += 1
                     logger.info(
                         "[gen_params %s] topic=%s run=%d/%d (%d/%d total)",
@@ -199,14 +403,19 @@ class ExperimentRunner:
                     )
 
                     user_prompt = baseline_prompt.user_prompt(topic)
+
+                    # -- Generate the essay ---------------------------------
                     gen = self._gemini.generate(
                         user_prompt=user_prompt,
                         system_prompt=baseline_prompt.system_prompt,
                         temperature=gp.temperature,
                         top_p=gp.top_p,
                     )
+
+                    # -- Run the detector -----------------------------------
                     det = self._detector.check(gen.text)
 
+                    # -- Build and persist the record -----------------------
                     record = _build_record(
                         phase="gen_params_sweep",
                         dimension="gen_params",
@@ -221,6 +430,7 @@ class ExperimentRunner:
                         det_result=det,
                         detector_name=self._detector.name,
                     )
+
                     _log_record(record, self._output_path)
                     records.append(record)
                     time.sleep(self._delay)
@@ -228,7 +438,7 @@ class ExperimentRunner:
         _log_phase_summary("gen_params_sweep", records)
         return records
 
-    # ── Phase 3: Per-Dimension Ablation ────────────────────────────────────────
+    # ── Phase 3: Per-Dimension Ablation ────────────────────────────────────
 
     def run_ablation(
         self,
@@ -238,10 +448,20 @@ class ExperimentRunner:
         temperature: float = config.DEFAULT_TEMPERATURE,
         top_p: float = config.DEFAULT_TOP_P,
     ) -> list[RunRecord]:
-        """Test all variants in one prompt dimension across topics.
-
-        Uses fixed generation parameters (ideally the best from the sweep).
         """
+        Test all variants in one prompt dimension across topics.
+
+        Generation parameters are held fixed (ideally the best values from the
+        Tier 6 sweep) so the only independent variable is the prompt variant.
+
+        @param dimension:   Prompt dimension to ablate (e.g. ``"persona"``).
+        @param topics:      Override the default topic list.
+        @param n_runs:      Number of runs per variant per topic.
+        @param temperature: Fixed temperature for all generations.
+        @param top_p:       Fixed top_p for all generations.
+        @returns:           A list of :class:`RunRecord` objects.
+        """
+
         topics = topics or self._registry.topics
         variants = self._registry.get_dimension(dimension)
 
@@ -252,21 +472,28 @@ class ExperimentRunner:
         for variant in variants:
             for topic in topics:
                 for run in range(n_runs):
+
                     done += 1
                     logger.info(
                         "[ablation %s/%s] topic=%s run=%d/%d (%d/%d total)",
-                        dimension, variant.id, _short(topic), run + 1, n_runs, done, total,
+                        dimension, variant.id, _short(topic),
+                        run + 1, n_runs, done, total,
                     )
 
                     user_prompt = variant.user_prompt(topic)
+
+                    # -- Generate the essay ---------------------------------
                     gen = self._gemini.generate(
                         user_prompt=user_prompt,
                         system_prompt=variant.system_prompt,
                         temperature=temperature,
                         top_p=top_p,
                     )
+
+                    # -- Run the detector -----------------------------------
                     det = self._detector.check(gen.text)
 
+                    # -- Build and persist the record -----------------------
                     record = _build_record(
                         phase="ablation",
                         dimension=dimension,
@@ -281,6 +508,7 @@ class ExperimentRunner:
                         det_result=det,
                         detector_name=self._detector.name,
                     )
+
                     _log_record(record, self._output_path)
                     records.append(record)
                     time.sleep(self._delay)
@@ -295,28 +523,57 @@ class ExperimentRunner:
         temperature: float = config.DEFAULT_TEMPERATURE,
         top_p: float = config.DEFAULT_TOP_P,
     ) -> list[RunRecord]:
-        """Run ablations for every prompt dimension (Tiers 1-5)."""
+        """
+        Run ablations for every prompt dimension (Tiers 1-5).
+
+        Convenience wrapper that iterates over all prompt dimensions and
+        delegates to :meth:`run_ablation` for each one.
+
+        @param topics:      Override the default topic list.
+        @param n_runs:      Number of runs per variant per topic.
+        @param temperature: Fixed temperature for all generations.
+        @param top_p:       Fixed top_p for all generations.
+        @returns:           Combined list of :class:`RunRecord` objects.
+        """
+
         all_records: list[RunRecord] = []
+
         for dim in self._registry.prompt_dimensions:
             records = self.run_ablation(
-                dim, topics=topics, n_runs=n_runs,
-                temperature=temperature, top_p=top_p,
+                dim,
+                topics=topics,
+                n_runs=n_runs,
+                temperature=temperature,
+                top_p=top_p,
             )
             all_records.extend(records)
+
         return all_records
 
-    # ── Phase 4: Composite Prompts ─────────────────────────────────────────────
+    # ── Phase 4: Composite Prompts ─────────────────────────────────────────
 
     def run_composites(
         self,
         topics: list[str] | None = None,
         n_runs: int = config.RUNS_PER_COMPOSITE,
     ) -> list[RunRecord]:
-        """Test composite prompts (combined best-of-each-tier) across all topics."""
+        """
+        Test composite prompts (combined best-of-each-tier) across all topics.
+
+        Composites are defined in the taxonomy YAML after ablation results have
+        been analysed.  If none are defined, this method returns an empty list.
+
+        @param topics: Override the default topic list.
+        @param n_runs: Number of runs per composite per topic (higher N for
+                       final validation).
+        @returns:      A list of :class:`RunRecord` objects.
+        """
+
         topics = topics or self._registry.topics
         composites = self._registry.composites
+
         if not composites:
-            logger.warning("No composite prompts defined — skipping.")
+            logger.warning("No composite prompts defined -- skipping.")
             return []
 
         records: list[RunRecord] = []
@@ -326,6 +583,7 @@ class ExperimentRunner:
         for ci, comp in enumerate(composites):
             for topic in topics:
                 for run in range(n_runs):
+
                     done += 1
                     logger.info(
                         "[composite %d/%d '%s'] topic=%s run=%d/%d (%d/%d total)",
@@ -334,14 +592,19 @@ class ExperimentRunner:
                     )
 
                     user_prompt = comp.user_prompt(topic)
+
+                    # -- Generate the essay ---------------------------------
                     gen = self._gemini.generate(
                         user_prompt=user_prompt,
                         system_prompt=comp.system_prompt,
                         temperature=comp.temperature,
                         top_p=comp.top_p,
                     )
+
+                    # -- Run the detector -----------------------------------
                     det = self._detector.check(gen.text)
 
+                    # -- Build and persist the record -----------------------
                     record = _build_record(
                         phase="composite",
                         dimension="composite",
@@ -356,6 +619,7 @@ class ExperimentRunner:
                         det_result=det,
                         detector_name=self._detector.name,
                     )
+
                     _log_record(record, self._output_path)
                     records.append(record)
                     time.sleep(self._delay)
@@ -363,61 +627,47 @@ class ExperimentRunner:
         _log_phase_summary("composite", records)
         return records
 
-    # ── Full Pipeline ──────────────────────────────────────────────────────────
+    # ── Full Pipeline ──────────────────────────────────────────────────────
 
     def run_full_pipeline(
         self,
         best_temperature: float = config.DEFAULT_TEMPERATURE,
         best_top_p: float = config.DEFAULT_TOP_P,
     ) -> dict[str, list[RunRecord]]:
-        """Execute the full experiment in the prescribed order.
-
-        1. Human baselines
-        2. Gen-params sweep (Tier 6)
-        3. Ablations for Tiers 1-5 at the given temperature/top_p
-        4. Composite prompts
-
-        Returns a dict keyed by phase name.
         """
+        Execute the full experiment in the prescribed order.
+
+        The four phases run sequentially:
+
+        1. Human baselines   -- calibrate the detector's false-positive rate.
+        2. Gen-params sweep  -- find optimal temperature / top_p (Tier 6).
+        3. Ablations         -- test all prompt variants at the best params.
+        4. Composite prompts -- validate combined best-of-each-tier prompts.
+
+        @param best_temperature: Temperature to use for ablations (from sweep).
+        @param best_top_p:       top_p to use for ablations (from sweep).
+        @returns: A dict keyed by phase name, each value a list of
+                  :class:`RunRecord` objects.
+        """
+
         results: dict[str, list[RunRecord]] = {}
 
-        logger.info("═══ Phase 1: Human Baselines ═══")
+        logger.info("=== Phase 1: Human Baselines ===")
         results["human_baselines"] = self.run_human_baselines()
 
-        logger.info("═══ Phase 2: Gen-Params Sweep ═══")
+        logger.info("=== Phase 2: Gen-Params Sweep ===")
         results["gen_params_sweep"] = self.run_gen_params_sweep()
 
-        logger.info("═══ Phase 3: Ablations (Tiers 1-5) ═══")
+        logger.info("=== Phase 3: Ablations (Tiers 1-5) ===")
         results["ablations"] = self.run_all_ablations(
-            temperature=best_temperature, top_p=best_top_p,
+            temperature=best_temperature,
+            top_p=best_top_p,
         )
 
-        logger.info("═══ Phase 4: Composite Prompts ═══")
+        logger.info("=== Phase 4: Composite Prompts ===")
         results["composites"] = self.run_composites()
 
         total = sum(len(v) for v in results.values())
-        logger.info("═══ Pipeline complete. %d total records logged. ═══", total)
+        logger.info("=== Pipeline complete. %d total records logged. ===", total)
+
         return results
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _short(topic: str, max_len: int = 40) -> str:
-    """Truncate a topic string for log readability."""
-    return topic[:max_len] + "..." if len(topic) > max_len else topic
-
-
-def _log_phase_summary(phase: str, records: list[RunRecord]) -> None:
-    if not records:
-        return
-    probs = [r.overall_ai_prob for r in records]
-    passing = sum(1 for r in records if r.passes_threshold)
-    logger.info(
-        "%s complete: %d runs, mean AI prob %.3f, pass rate %d/%d (%.0f%%)",
-        phase,
-        len(records),
-        sum(probs) / len(probs),
-        passing,
-        len(records),
-        passing / len(records) * 100,
-    )
