@@ -13,6 +13,7 @@ from src.detector_client import (
     DetectorResult,
     GPTZeroClient,
     SentenceScore,
+    ZeroGPTClient,
 )
 
 
@@ -224,3 +225,200 @@ def test_gptzero_name():
     """The name property should return 'gptzero'."""
     client = GPTZeroClient(api_key="test-key")
     assert client.name == "gptzero"
+
+
+# ── ZeroGPT fixtures ─────────────────────────────────────────────────────────
+
+SAMPLE_ZEROGPT_AI_RESPONSE = {
+    "success": True,
+    "data": {
+        "is_human_written": False,
+        "is_gpt_generated": True,
+    },
+    "fakePercentage": 85.64,
+    "textWords": 78,
+    "aiWords": 67,
+    "h": [
+        "AI is transforming education.",
+        "Studies show measurable impacts.",
+    ],
+}
+
+SAMPLE_ZEROGPT_HUMAN_RESPONSE = {
+    "success": True,
+    "data": {
+        "is_human_written": True,
+        "is_gpt_generated": False,
+    },
+    "fakePercentage": 4.12,
+    "textWords": 45,
+    "aiWords": 2,
+    "h": [],
+}
+
+SAMPLE_ZEROGPT_INPUT = (
+    "AI is transforming education. I think it's kinda weird though. "
+    "Studies show measurable impacts. My teacher mentioned this once."
+)
+
+
+def _mock_zerogpt_response(json_data: dict, status_code: int = 200) -> httpx.Response:
+    """Build a fake httpx.Response for ZeroGPT."""
+    return httpx.Response(
+        status_code=status_code,
+        json=json_data,
+        request=httpx.Request("POST", "https://api.zerogpt.com/api/detect/detectText"),
+    )
+
+
+# ── ZeroGPTClient parsing tests ──────────────────────────────────────────────
+
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_check_parses_ai_response(mock_httpx_cls):
+    """Should correctly parse a high-AI-probability ZeroGPT response."""
+    mock_httpx_cls.return_value.__enter__ = lambda self: self
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_httpx_cls.return_value.post.return_value = _mock_zerogpt_response(SAMPLE_ZEROGPT_AI_RESPONSE)
+
+    client = ZeroGPTClient(api_key="test-key")
+    result = client.check(SAMPLE_ZEROGPT_INPUT)
+
+    assert isinstance(result, DetectorResult)
+    assert result.overall_ai_prob == pytest.approx(0.8564)
+    assert result.burstiness is None
+    assert len(result.per_sentence_scores) == 4
+    # 2 of 4 sentences flagged
+    assert result.flagged_sentence_pct == 50.0
+    assert result.raw_response == SAMPLE_ZEROGPT_AI_RESPONSE
+
+
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_check_parses_human_response(mock_httpx_cls):
+    """A human-written text should have low AI prob and 0% flagged sentences."""
+    mock_httpx_cls.return_value.__enter__ = lambda self: self
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_httpx_cls.return_value.post.return_value = _mock_zerogpt_response(SAMPLE_ZEROGPT_HUMAN_RESPONSE)
+
+    client = ZeroGPTClient(api_key="test-key")
+    result = client.check("So like yesterday I was thinking. It hit me pretty hard tbh.")
+
+    assert result.overall_ai_prob == pytest.approx(0.0412)
+    assert result.burstiness is None
+    assert result.flagged_sentence_pct == 0.0
+    assert len(result.per_sentence_scores) == 2
+
+
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_sentence_scores_populated(mock_httpx_cls):
+    """Per-sentence scores should flag AI sentences with 1.0 and others with 0.0."""
+    mock_httpx_cls.return_value.__enter__ = lambda self: self
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_httpx_cls.return_value.post.return_value = _mock_zerogpt_response(SAMPLE_ZEROGPT_AI_RESPONSE)
+
+    client = ZeroGPTClient(api_key="test-key")
+    result = client.check(SAMPLE_ZEROGPT_INPUT)
+
+    # First sentence is in h → flagged
+    assert result.per_sentence_scores[0].sentence == "AI is transforming education."
+    assert result.per_sentence_scores[0].generated_prob == 1.0
+    # Second sentence is NOT in h → not flagged
+    assert result.per_sentence_scores[1].sentence == "I think it's kinda weird though."
+    assert result.per_sentence_scores[1].generated_prob == 0.0
+
+
+# ── ZeroGPT retry / error handling tests ─────────────────────────────────────
+
+@patch("src.detector_client.time.sleep")
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_retries_on_429(mock_httpx_cls, mock_sleep):
+    """Should retry with backoff on rate limit (429) then succeed."""
+    rate_limited = _mock_zerogpt_response({}, status_code=429)
+    ok = _mock_zerogpt_response(SAMPLE_ZEROGPT_HUMAN_RESPONSE)
+
+    mock_client = MagicMock()
+    mock_httpx_cls.return_value.__enter__ = lambda self: mock_client
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_client.post.side_effect = [rate_limited, ok]
+
+    client = ZeroGPTClient(api_key="test-key")
+    result = client.check("Text.")
+
+    assert result.overall_ai_prob == pytest.approx(0.0412)
+    mock_sleep.assert_called_once()
+
+
+@patch("src.detector_client.time.sleep")
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_retries_on_500(mock_httpx_cls, mock_sleep):
+    """Should retry on server errors (5xx)."""
+    error_resp = httpx.Response(
+        status_code=500,
+        text="Internal Server Error",
+        request=httpx.Request("POST", "https://api.zerogpt.com/api/detect/detectText"),
+    )
+    ok = _mock_zerogpt_response(SAMPLE_ZEROGPT_HUMAN_RESPONSE)
+
+    mock_client = MagicMock()
+    mock_httpx_cls.return_value.__enter__ = lambda self: mock_client
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_client.post.side_effect = [
+        httpx.HTTPStatusError("500", request=error_resp.request, response=error_resp),
+        ok,
+    ]
+
+    client = ZeroGPTClient(api_key="test-key")
+    result = client.check("Text.")
+
+    assert result.overall_ai_prob == pytest.approx(0.0412)
+    mock_sleep.assert_called_once()
+
+
+@patch("src.detector_client.time.sleep")
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_raises_after_max_retries(mock_httpx_cls, mock_sleep):
+    """Should raise RuntimeError after exhausting retries."""
+    mock_client = MagicMock()
+    mock_httpx_cls.return_value.__enter__ = lambda self: mock_client
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_client.post.side_effect = httpx.ConnectError("connection refused")
+
+    client = ZeroGPTClient(api_key="test-key")
+    with pytest.raises(RuntimeError, match="failed after"):
+        client.check("Text.")
+
+    assert mock_client.post.call_count == config.MAX_RETRIES
+
+
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_raises_on_401(mock_httpx_cls):
+    """Non-retryable client errors (401) should raise immediately."""
+    error_resp = httpx.Response(
+        status_code=401,
+        text="Unauthorized",
+        request=httpx.Request("POST", "https://api.zerogpt.com/api/detect/detectText"),
+    )
+    mock_client = MagicMock()
+    mock_httpx_cls.return_value.__enter__ = lambda self: mock_client
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_client.post.side_effect = httpx.HTTPStatusError(
+        "401", request=error_resp.request, response=error_resp
+    )
+
+    client = ZeroGPTClient(api_key="test-key")
+    with pytest.raises(httpx.HTTPStatusError):
+        client.check("Text.")
+
+    assert mock_client.post.call_count == 1
+
+
+def test_zerogpt_missing_api_key_raises():
+    """Should raise ValueError if no API key is provided."""
+    with patch.dict("os.environ", {"ZEROGPT_API_KEY": ""}, clear=False):
+        with pytest.raises(ValueError, match="ZEROGPT_API_KEY"):
+            ZeroGPTClient()
+
+
+def test_zerogpt_name():
+    """The name property should return 'zerogpt'."""
+    client = ZeroGPTClient(api_key="test-key")
+    assert client.name == "zerogpt"

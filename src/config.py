@@ -18,6 +18,7 @@ SUMMARY_CSV_PATH = DATA_DIR / "summary.csv"
 # ── API Keys ───────────────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GPTZERO_API_KEY = os.environ.get("GPTZERO_API_KEY", "")
+ZEROGPT_API_KEY = os.environ.get("ZEROGPT_API_KEY", "")
 
 # ── Gemini Generation ─────────────────────────────────────────────────────────
 GEMINI_MODEL = "gemini-2.0-flash"
@@ -41,6 +42,7 @@ RETRY_BASE_DELAY_S = 2.0  # Exponential backoff: 2s, 4s, 8s
 # ── Detection ──────────────────────────────────────────────────────────────────
 # GPTZero API endpoint
 GPTZERO_API_URL = "https://api.gptzero.me/v2/predict/text"
+ZEROGPT_API_URL = "https://api.zerogpt.com/api/detect/detectText"
 
 # Threshold: below this = "passes" as human-written
 DETECTION_PASS_THRESHOLD = 0.15  # completely_generated_prob < 0.15
