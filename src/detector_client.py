@@ -194,69 +194,68 @@ class ZeroGPTClient(DetectorClient):
         last_exc: Exception | None = None
         payload = {"input_text": text}
 
-        for retry in range(config.MAX_RETRIES):
+        with httpx.Client(timeout=30) as client:
+            for retry in range(config.MAX_RETRIES):
 
-            try:
-                # -- Fire the HTTP request ----------------------------------
-                with httpx.Client(timeout=30) as client:
+                try:
                     resp = client.post(
                         self._api_url,
                         json=payload,
                         headers=self._headers,
                     )
 
-                # -- Handle rate-limiting (429) -- retry after backoff ------
-                if resp.status_code == 429:
+                    # -- Handle rate-limiting (429) -- retry after backoff --
+                    if resp.status_code == 429:
+                        delay = config.RETRY_BASE_DELAY_S * (2**retry)
+
+                        logger.warning(
+                            "ZeroGPT rate limited (429), backing off %.1fs (retry %d/%d)",
+                            delay,
+                            retry + 1,
+                            config.MAX_RETRIES,
+                        )
+
+                        time.sleep(delay)
+                        continue
+
+                    # -- Raise on any other non-2xx status ------------------
+                    resp.raise_for_status()
+                    return resp.json()
+
+                except httpx.HTTPStatusError as exc:
+                    last_exc = exc
+
+                    # Server errors (5xx) are transient -- retry.
+                    if exc.response.status_code >= 500:
+                        delay = config.RETRY_BASE_DELAY_S * (2**retry)
+
+                        logger.warning(
+                            "ZeroGPT server error %d, backing off %.1fs (retry %d/%d)",
+                            exc.response.status_code,
+                            delay,
+                            retry + 1,
+                            config.MAX_RETRIES,
+                        )
+
+                        time.sleep(delay)
+                        continue
+
+                    # Client errors (4xx other than 429) are not retryable.
+                    raise
+
+                except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+                    last_exc = exc
                     delay = config.RETRY_BASE_DELAY_S * (2**retry)
 
                     logger.warning(
-                        "ZeroGPT rate limited (429), backing off %.1fs (retry %d/%d)",
+                        "ZeroGPT connection error, backing off %.1fs (retry %d/%d): %s",
                         delay,
                         retry + 1,
                         config.MAX_RETRIES,
+                        exc,
                     )
 
                     time.sleep(delay)
-                    continue
-
-                # -- Raise on any other non-2xx status ----------------------
-                resp.raise_for_status()
-                return resp.json()
-
-            except httpx.HTTPStatusError as exc:
-                last_exc = exc
-
-                # Server errors (5xx) are transient -- retry.
-                if exc.response.status_code >= 500:
-                    delay = config.RETRY_BASE_DELAY_S * (2**retry)
-
-                    logger.warning(
-                        "ZeroGPT server error %d, backing off %.1fs (retry %d/%d)",
-                        exc.response.status_code,
-                        delay,
-                        retry + 1,
-                        config.MAX_RETRIES,
-                    )
-
-                    time.sleep(delay)
-                    continue
-
-                # Client errors (4xx other than 429) are not retryable.
-                raise
-
-            except (httpx.ConnectError, httpx.ReadTimeout) as exc:
-                last_exc = exc
-                delay = config.RETRY_BASE_DELAY_S * (2**retry)
-
-                logger.warning(
-                    "ZeroGPT connection error, backing off %.1fs (retry %d/%d): %s",
-                    delay,
-                    retry + 1,
-                    config.MAX_RETRIES,
-                    exc,
-                )
-
-                time.sleep(delay)
 
         raise RuntimeError(
             f"ZeroGPT API failed after {config.MAX_RETRIES} retries"
@@ -289,16 +288,22 @@ class ZeroGPTClient(DetectorClient):
 
         # -- Flagged sentences from ZeroGPT's "h" array --------------------
         ai_sentences: list[str] = raw.get("h", [])
-        ai_sentences_set = set(ai_sentences)
+        # Normalize whitespace for robust matching: ZeroGPT may return
+        # sentences with slightly different whitespace than our naive split.
+        ai_normalized = {self._normalize(s) for s in ai_sentences}
 
         # -- Split the original essay into sentences for scoring ------------
         all_sentences = self._split_sentences(original_text)
 
         # -- Build per-sentence scores (binary: in "h" or not) --------------
         sentences: list[SentenceScore] = []
+        flagged = 0
 
         for sent in all_sentences:
-            is_flagged = sent in ai_sentences_set
+            is_flagged = self._normalize(sent) in ai_normalized
+
+            if is_flagged:
+                flagged += 1
 
             sentences.append(
                 SentenceScore(
@@ -309,7 +314,6 @@ class ZeroGPTClient(DetectorClient):
             )
 
         # -- Compute flagged-sentence percentage ----------------------------
-        flagged = len(ai_sentences)
         flagged_pct = (flagged / len(all_sentences) * 100) if all_sentences else 0.0
 
         return DetectorResult(
@@ -320,15 +324,28 @@ class ZeroGPTClient(DetectorClient):
             raw_response=raw,
         )
 
-    # ── Sentence splitting helper ──────────────────────────────────────────
+    # ── Text helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """
+        Collapse runs of whitespace into single spaces and strip.
+
+        Used to compare our sentence splits against ZeroGPT's ``h`` array
+        without being tripped up by minor whitespace differences.
+        """
+
+        return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod
     def _split_sentences(text: str) -> list[str]:
         """
         Naive sentence splitting on common terminators (``.``, ``!``, ``?``).
 
-        This is intentionally simple -- it only needs to match the exact strings
-        ZeroGPT returns in its ``h`` array.
+        This heuristic will mis-split on abbreviations like "Dr." or "U.S."
+        but is sufficient for scoring essay-length text where such cases are
+        rare.  The primary metric (``overall_ai_prob``) is unaffected; only
+        the per-sentence breakdown may have noise.
 
         @param text: The full essay text.
         @returns:    A list of non-empty sentence strings.
@@ -422,69 +439,68 @@ class GPTZeroClient(DetectorClient):
         last_exc: Exception | None = None
         payload = {"document": text}
 
-        for retry in range(config.MAX_RETRIES):
+        with httpx.Client(timeout=30) as client:
+            for retry in range(config.MAX_RETRIES):
 
-            try:
-                # -- Fire the HTTP request ----------------------------------
-                with httpx.Client(timeout=30) as client:
+                try:
                     resp = client.post(
                         self._api_url,
                         json=payload,
                         headers=self._headers,
                     )
 
-                # -- Handle rate-limiting (429) -- retry after backoff ------
-                if resp.status_code == 429:
+                    # -- Handle rate-limiting (429) -- retry after backoff --
+                    if resp.status_code == 429:
+                        delay = config.RETRY_BASE_DELAY_S * (2**retry)
+
+                        logger.warning(
+                            "GPTZero rate limited (429), backing off %.1fs (retry %d/%d)",
+                            delay,
+                            retry + 1,
+                            config.MAX_RETRIES,
+                        )
+
+                        time.sleep(delay)
+                        continue
+
+                    # -- Raise on any other non-2xx status ------------------
+                    resp.raise_for_status()
+                    return resp.json()
+
+                except httpx.HTTPStatusError as exc:
+                    last_exc = exc
+
+                    # Server errors (5xx) are transient -- retry.
+                    if exc.response.status_code >= 500:
+                        delay = config.RETRY_BASE_DELAY_S * (2**retry)
+
+                        logger.warning(
+                            "GPTZero server error %d, backing off %.1fs (retry %d/%d)",
+                            exc.response.status_code,
+                            delay,
+                            retry + 1,
+                            config.MAX_RETRIES,
+                        )
+
+                        time.sleep(delay)
+                        continue
+
+                    # Client errors (4xx other than 429) are not retryable.
+                    raise
+
+                except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+                    last_exc = exc
                     delay = config.RETRY_BASE_DELAY_S * (2**retry)
 
                     logger.warning(
-                        "GPTZero rate limited (429), backing off %.1fs (retry %d/%d)",
+                        "GPTZero connection error, backing off %.1fs (retry %d/%d): %s",
                         delay,
                         retry + 1,
                         config.MAX_RETRIES,
+                        exc,
                     )
 
                     time.sleep(delay)
-                    continue
-
-                # -- Raise on any other non-2xx status ----------------------
-                resp.raise_for_status()
-                return resp.json()
-
-            except httpx.HTTPStatusError as exc:
-                last_exc = exc
-
-                # Server errors (5xx) are transient -- retry.
-                if exc.response.status_code >= 500:
-                    delay = config.RETRY_BASE_DELAY_S * (2**retry)
-
-                    logger.warning(
-                        "GPTZero server error %d, backing off %.1fs (retry %d/%d)",
-                        exc.response.status_code,
-                        delay,
-                        retry + 1,
-                        config.MAX_RETRIES,
-                    )
-
-                    time.sleep(delay)
-                    continue
-
-                # Client errors (4xx other than 429) are not retryable.
-                raise
-
-            except (httpx.ConnectError, httpx.ReadTimeout) as exc:
-                last_exc = exc
-                delay = config.RETRY_BASE_DELAY_S * (2**retry)
-
-                logger.warning(
-                    "GPTZero connection error, backing off %.1fs (retry %d/%d): %s",
-                    delay,
-                    retry + 1,
-                    config.MAX_RETRIES,
-                    exc,
-                )
-
-                time.sleep(delay)
 
         raise RuntimeError(
             f"GPTZero API failed after {config.MAX_RETRIES} retries"

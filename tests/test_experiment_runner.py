@@ -70,6 +70,40 @@ def _fake_det_result(ai_prob: float = 0.85) -> DetectorResult:
     )
 
 
+def _make_run_record(
+    variant_id="P6a",
+    temperature=0.7,
+    top_p=0.9,
+    overall_ai_prob=0.85,
+) -> RunRecord:
+    """Build a minimal RunRecord for testing best_params_from_sweep."""
+
+    return RunRecord(
+        timestamp="2025-01-01T00:00:00+00:00",
+        phase="gen_params_sweep",
+        dimension="gen_params",
+        variant_id=variant_id,
+        variant_label="test",
+        topic="test topic",
+        run_index=0,
+        model="gemini-2.0-flash",
+        temperature=temperature,
+        top_p=top_p,
+        top_k=40,
+        word_count=500,
+        generation_latency_ms=150,
+        generation_attempts=1,
+        essay_text="test",
+        detector="mock",
+        overall_ai_prob=overall_ai_prob,
+        burstiness=40.0,
+        flagged_sentence_pct=50.0,
+        passes_threshold=overall_ai_prob < config.DETECTION_PASS_THRESHOLD,
+        system_prompt="",
+        user_prompt="test",
+    )
+
+
 @pytest.fixture
 def mock_gemini():
     """A mock GeminiClient that always returns a 500-word essay."""
@@ -217,6 +251,36 @@ def test_run_all_ablations(runner):
     dims = set(r.dimension for r in records)
 
     assert dims == {"persona", "structure", "texture", "content", "meta"}
+
+
+# ===========================================================================
+# best_params_from_sweep
+# ===========================================================================
+
+
+def test_best_params_from_sweep_picks_lowest_mean():
+    """Should return the temperature/top_p of the variant with lowest mean AI prob."""
+
+    records = [
+        # P6a: mean AI prob = 0.85
+        _make_run_record(variant_id="P6a", temperature=0.7, top_p=0.9, overall_ai_prob=0.80),
+        _make_run_record(variant_id="P6a", temperature=0.7, top_p=0.9, overall_ai_prob=0.90),
+        # P6b: mean AI prob = 0.55 -- winner
+        _make_run_record(variant_id="P6b", temperature=1.0, top_p=0.95, overall_ai_prob=0.50),
+        _make_run_record(variant_id="P6b", temperature=1.0, top_p=0.95, overall_ai_prob=0.60),
+    ]
+
+    temp, top_p = ExperimentRunner.best_params_from_sweep(records)
+    assert temp == 1.0
+    assert top_p == 0.95
+
+
+def test_best_params_from_sweep_empty_returns_defaults():
+    """Empty sweep results should fall back to config defaults."""
+
+    temp, top_p = ExperimentRunner.best_params_from_sweep([])
+    assert temp == config.DEFAULT_TEMPERATURE
+    assert top_p == config.DEFAULT_TOP_P
 
 
 # ===========================================================================

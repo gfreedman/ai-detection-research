@@ -627,12 +627,50 @@ class ExperimentRunner:
         _log_phase_summary("composite", records)
         return records
 
+    # ── Helpers ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def best_params_from_sweep(
+        sweep_records: list[RunRecord],
+    ) -> tuple[float, float]:
+        """
+        Extract the best temperature and top_p from gen-params sweep records.
+
+        Groups records by ``variant_id``, computes the mean ``overall_ai_prob``
+        for each variant, and returns the (temperature, top_p) of the variant
+        with the lowest mean detection probability.
+
+        Falls back to the config defaults if *sweep_records* is empty.
+
+        @param sweep_records: Records from :meth:`run_gen_params_sweep`.
+        @returns: A ``(temperature, top_p)`` tuple.
+        """
+
+        if not sweep_records:
+            return config.DEFAULT_TEMPERATURE, config.DEFAULT_TOP_P
+
+        # Group AI probs by variant, keep the first-seen params per variant.
+        variant_probs: dict[str, list[float]] = {}
+        variant_params: dict[str, tuple[float, float]] = {}
+
+        for r in sweep_records:
+            variant_probs.setdefault(r.variant_id, []).append(r.overall_ai_prob)
+            if r.variant_id not in variant_params:
+                variant_params[r.variant_id] = (r.temperature, r.top_p)
+
+        best_vid = min(
+            variant_probs,
+            key=lambda v: sum(variant_probs[v]) / len(variant_probs[v]),
+        )
+
+        return variant_params[best_vid]
+
     # ── Full Pipeline ──────────────────────────────────────────────────────
 
     def run_full_pipeline(
         self,
-        best_temperature: float = config.DEFAULT_TEMPERATURE,
-        best_top_p: float = config.DEFAULT_TOP_P,
+        best_temperature: float | None = None,
+        best_top_p: float | None = None,
     ) -> dict[str, list[RunRecord]]:
         """
         Execute the full experiment in the prescribed order.
@@ -642,10 +680,14 @@ class ExperimentRunner:
         1. Human baselines   -- calibrate the detector's false-positive rate.
         2. Gen-params sweep  -- find optimal temperature / top_p (Tier 6).
         3. Ablations         -- test all prompt variants at the best params.
+           If *best_temperature* / *best_top_p* are ``None``, the optimal
+           values are extracted automatically from the sweep results.
         4. Composite prompts -- validate combined best-of-each-tier prompts.
 
-        @param best_temperature: Temperature to use for ablations (from sweep).
-        @param best_top_p:       top_p to use for ablations (from sweep).
+        @param best_temperature: Override temperature for ablations.  ``None``
+                                 (default) = auto-select from sweep results.
+        @param best_top_p:       Override top_p for ablations.  ``None``
+                                 (default) = auto-select from sweep results.
         @returns: A dict keyed by phase name, each value a list of
                   :class:`RunRecord` objects.
         """
@@ -658,10 +700,24 @@ class ExperimentRunner:
         logger.info("=== Phase 2: Gen-Params Sweep ===")
         results["gen_params_sweep"] = self.run_gen_params_sweep()
 
+        # Auto-select best params from sweep unless caller overrode.
+        sweep_temp, sweep_top_p = self.best_params_from_sweep(
+            results["gen_params_sweep"]
+        )
+        use_temp = best_temperature if best_temperature is not None else sweep_temp
+        use_top_p = best_top_p if best_top_p is not None else sweep_top_p
+
+        logger.info(
+            "Ablation params: temperature=%.2f, top_p=%.2f%s",
+            use_temp,
+            use_top_p,
+            " (from sweep)" if best_temperature is None else " (user override)",
+        )
+
         logger.info("=== Phase 3: Ablations (Tiers 1-5) ===")
         results["ablations"] = self.run_all_ablations(
-            temperature=best_temperature,
-            top_p=best_top_p,
+            temperature=use_temp,
+            top_p=use_top_p,
         )
 
         logger.info("=== Phase 4: Composite Prompts ===")

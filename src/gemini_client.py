@@ -152,7 +152,7 @@ class GeminiClient:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
-            max_output_tokens=1024,
+            max_output_tokens=config.MAX_OUTPUT_TOKENS,
         )
 
         if system_prompt:

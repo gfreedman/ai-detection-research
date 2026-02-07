@@ -71,6 +71,7 @@ DEFAULT_TOP_K = 40
 TARGET_WORD_COUNT = 500
 WORD_COUNT_MIN = 450
 WORD_COUNT_MAX = 550
+MAX_OUTPUT_TOKENS = 2048  # 500 words ≈ 650 tokens; headroom for formatting/preamble
 MAX_REGENERATION_ATTEMPTS = 3
 
 # Retry logic for transient API failures (applies to both Gemini and detectors).
