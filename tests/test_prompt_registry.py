@@ -191,10 +191,13 @@ def test_empty_prefix_and_suffix_omitted(registry):
 # ===========================================================================
 
 
-def test_composites_empty_initially(registry):
-    """``composite_prompts`` starts as an empty list (filled after ablation)."""
+def test_composites_loaded(registry):
+    """Composite prompts defined in taxonomy.yaml are loaded correctly."""
 
-    assert registry.composites == []
+    assert len(registry.composites) == 3
+    labels = [c.label for c in registry.composites]
+    assert "Top 3 (persona + structure + texture)" in labels
+    assert "All 5 winners" in labels
 
 
 def test_composite_loading(tmp_path):

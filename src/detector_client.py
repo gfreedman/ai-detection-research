@@ -220,7 +220,41 @@ class ZeroGPTClient(DetectorClient):
 
                     # -- Raise on any other non-2xx status ------------------
                     resp.raise_for_status()
-                    return resp.json()
+
+                    body = resp.json()
+
+                    # ZeroGPT returns HTTP 200 even for API-level errors
+                    # (e.g. out of credits).  Check the "success" field.
+                    if not body.get("success", True):
+                        api_code = body.get("code", 0)
+                        msg = body.get("message", "unknown error")
+
+                        # Transient server-side errors (code >= 500) -- retry
+                        # with a 15 s base delay (not the default 3 s) because
+                        # ZeroGPT 500 errors ("Oh Oh, an error occurred") are
+                        # empirically observed to persist for 1-5 minutes before
+                        # clearing.  Schedule: 15 s, 30 s, 60 s, 120 s, 240 s
+                        # (total patience ≈ 7.5 min).
+                        if api_code >= 500:
+                            last_exc = RuntimeError(
+                                f"ZeroGPT API error: {msg} (code={api_code})"
+                            )
+                            delay = 15.0 * (2**retry)
+
+                            logger.warning(
+                                "ZeroGPT API error (code=%d), backing off %.1fs (retry %d/%d): %s",
+                                api_code, delay, retry + 1, config.MAX_RETRIES, msg,
+                            )
+
+                            time.sleep(delay)
+                            continue
+
+                        # Non-transient errors (e.g. 403 out of credits) -- fail.
+                        raise RuntimeError(
+                            f"ZeroGPT API error: {msg} (code={api_code})"
+                        )
+
+                    return body
 
                 except httpx.HTTPStatusError as exc:
                     last_exc = exc
@@ -243,7 +277,7 @@ class ZeroGPTClient(DetectorClient):
                     # Client errors (4xx other than 429) are not retryable.
                     raise
 
-                except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+                except (httpx.ConnectError, httpx.TimeoutException) as exc:
                     last_exc = exc
                     delay = config.RETRY_BASE_DELAY_S * (2**retry)
 
@@ -283,11 +317,18 @@ class ZeroGPTClient(DetectorClient):
         """
 
         # -- Overall AI probability (0-100 -> 0-1) -------------------------
-        fake_pct = raw.get("fakePercentage", 0.0)
+        # ZeroGPT's current API nests results under a "data" dict:
+        #   {"success": true, "data": {"fakePercentage": 85.2, "h": [...]}}
+        # Older API versions returned these keys at the top level.  We try
+        # "data" first and fall back to top-level keys so the parser handles
+        # both formats.  When credits are exhausted, "data" is null (not a
+        # dict), so the isinstance guard prevents an AttributeError.
+        data = raw.get("data", {}) if isinstance(raw.get("data"), dict) else {}
+        fake_pct = data.get("fakePercentage", raw.get("fakePercentage", 0.0))
         overall_ai_prob = fake_pct / 100.0
 
         # -- Flagged sentences from ZeroGPT's "h" array --------------------
-        ai_sentences: list[str] = raw.get("h", [])
+        ai_sentences: list[str] = data.get("h", raw.get("h", []))
         # Normalize whitespace for robust matching: ZeroGPT may return
         # sentences with slightly different whitespace than our naive split.
         ai_normalized = {self._normalize(s) for s in ai_sentences}
@@ -488,7 +529,7 @@ class GPTZeroClient(DetectorClient):
                     # Client errors (4xx other than 429) are not retryable.
                     raise
 
-                except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+                except (httpx.ConnectError, httpx.TimeoutException) as exc:
                     last_exc = exc
                     delay = config.RETRY_BASE_DELAY_S * (2**retry)
 

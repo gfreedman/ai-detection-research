@@ -17,6 +17,7 @@ Data Classes
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -255,7 +256,17 @@ class GeminiClient:
 
             except Exception as exc:
                 last_exc = exc
-                delay = config.RETRY_BASE_DELAY_S * (2**retry)
+
+                # Use a longer base delay for rate-limit (429) errors since
+                # the free-tier daily quota recovers slowly.
+                is_rate_limit = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
+                base = 30.0 if is_rate_limit else config.RETRY_BASE_DELAY_S
+                delay = base * (2**retry)
+
+                # Respect Gemini's suggested retry delay if present.
+                match = re.search(r"retry in ([\d.]+)s", str(exc))
+                if match:
+                    delay = max(delay, float(match.group(1)) + 1)
 
                 logger.warning(
                     "Gemini API error (retry %d/%d, backoff %.1fs): %s",

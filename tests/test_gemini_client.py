@@ -210,6 +210,7 @@ def test_api_raises_after_max_retries(mock_client_cls, mock_sleep):
 def test_missing_api_key_raises():
     """Should raise ValueError at init time if no API key is provided."""
 
-    with patch.dict("os.environ", {"GEMINI_API_KEY": ""}, clear=False):
+    with patch.dict("os.environ", {"GEMINI_API_KEY": ""}, clear=False), \
+         patch("src.config.GEMINI_API_KEY", ""):
         with pytest.raises(ValueError, match="GEMINI_API_KEY"):
             GeminiClient()

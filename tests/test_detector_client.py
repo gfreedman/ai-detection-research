@@ -269,7 +269,8 @@ def test_raises_on_401(mock_httpx_cls):
 def test_missing_api_key_raises():
     """Should raise ValueError at init time if no API key is provided."""
 
-    with patch.dict("os.environ", {"GPTZERO_API_KEY": ""}, clear=False):
+    with patch.dict("os.environ", {"GPTZERO_API_KEY": ""}, clear=False), \
+         patch("src.config.GPTZERO_API_KEY", ""):
         with pytest.raises(ValueError, match="GPTZERO_API_KEY"):
             GPTZeroClient()
 
@@ -291,17 +292,17 @@ def test_gptzero_name():
 # - "h" lists the 2 sentences ZeroGPT considers AI-generated
 SAMPLE_ZEROGPT_AI_RESPONSE = {
     "success": True,
+    "code": 200,
     "data": {
-        "is_human_written": False,
-        "is_gpt_generated": True,
+        "fakePercentage": 85.64,
+        "textWords": 78,
+        "aiWords": 67,
+        "h": [
+            "AI is transforming education.",
+            "Studies show measurable impacts.",
+        ],
+        "isHuman": 14,
     },
-    "fakePercentage": 85.64,
-    "textWords": 78,
-    "aiWords": 67,
-    "h": [
-        "AI is transforming education.",
-        "Studies show measurable impacts.",
-    ],
 }
 
 # A typical ZeroGPT response for a genuinely human-written essay:
@@ -309,14 +310,14 @@ SAMPLE_ZEROGPT_AI_RESPONSE = {
 # - "h" is empty (no sentences flagged)
 SAMPLE_ZEROGPT_HUMAN_RESPONSE = {
     "success": True,
+    "code": 200,
     "data": {
-        "is_human_written": True,
-        "is_gpt_generated": False,
+        "fakePercentage": 4.12,
+        "textWords": 45,
+        "aiWords": 2,
+        "h": [],
+        "isHuman": 96,
     },
-    "fakePercentage": 4.12,
-    "textWords": 45,
-    "aiWords": 2,
-    "h": [],
 }
 
 # The input text used for ZeroGPT AI-response tests.
@@ -512,10 +513,61 @@ def test_zerogpt_raises_on_401(mock_httpx_cls):
     assert mock_client.post.call_count == 1
 
 
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_raises_on_api_level_error(mock_httpx_cls):
+    """ZeroGPT returns HTTP 200 but success=false for account errors (e.g. out of credits)."""
+
+    error_body = {
+        "success": False,
+        "code": 403,
+        "message": "Not enough credits",
+        "data": None,
+    }
+
+    mock_client = MagicMock()
+    mock_httpx_cls.return_value.__enter__ = lambda self: mock_client
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_client.post.return_value = _mock_zerogpt_response(error_body)
+
+    client = ZeroGPTClient(api_key="test-key")
+
+    with pytest.raises(RuntimeError, match="Not enough credits"):
+        client.check("Text.")
+
+    # Should NOT retry on account errors -- immediate failure.
+    assert mock_client.post.call_count == 1
+
+
+@patch("src.detector_client.time.sleep")
+@patch("src.detector_client.httpx.Client")
+def test_zerogpt_retries_on_transient_api_error(mock_httpx_cls, mock_sleep):
+    """ZeroGPT transient API errors (code >= 500) should be retried."""
+
+    transient_error = _mock_zerogpt_response({
+        "success": False,
+        "code": 500,
+        "message": "Oh Oh, an error occurred, Please try again in 1 second",
+        "data": None,
+    })
+    ok = _mock_zerogpt_response(SAMPLE_ZEROGPT_HUMAN_RESPONSE)
+
+    mock_client = MagicMock()
+    mock_httpx_cls.return_value.__enter__ = lambda self: mock_client
+    mock_httpx_cls.return_value.__exit__ = MagicMock(return_value=False)
+    mock_client.post.side_effect = [transient_error, ok]
+
+    client = ZeroGPTClient(api_key="test-key")
+    result = client.check("Text.")
+
+    assert result.overall_ai_prob == pytest.approx(0.0412)
+    mock_sleep.assert_called_once()
+
+
 def test_zerogpt_missing_api_key_raises():
     """Should raise ValueError at init time if no API key is provided."""
 
-    with patch.dict("os.environ", {"ZEROGPT_API_KEY": ""}, clear=False):
+    with patch.dict("os.environ", {"ZEROGPT_API_KEY": ""}, clear=False), \
+         patch("src.config.ZEROGPT_API_KEY", ""):
         with pytest.raises(ValueError, match="ZEROGPT_API_KEY"):
             ZeroGPTClient()
 

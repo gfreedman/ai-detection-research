@@ -288,11 +288,13 @@ def test_best_params_from_sweep_empty_returns_defaults():
 # ===========================================================================
 
 
-def test_composites_skipped_when_empty(runner):
-    """With no composites defined, should return empty list without crashing."""
+def test_composites_run_all_defined(runner):
+    """Composites defined in taxonomy.yaml should each produce records."""
 
     records = runner.run_composites()
-    assert records == []
+    # 3 composites × 5 topics × 5 runs = 75 records
+    assert len(records) == 75
+    assert all(r.phase == "composite" for r in records)
 
 
 # ===========================================================================

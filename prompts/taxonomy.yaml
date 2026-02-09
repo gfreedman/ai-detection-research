@@ -161,6 +161,18 @@ topics:
   - "Write a 500-word essay about whether standardized testing is fair."
 
 # ── Composite Prompts ──────────────────────────────────────────────────────────
-# Filled in after ablation results — combine top performers from each tier.
-# Format: list of {label, components (list of variant IDs), gen_params (variant ID)}
-composite_prompts: []
+# Built from ablation results — combine top performers from each tier.
+# Winners: P1c (persona 9.5%), P2d (structure 10.5%), P3b (texture 9.5%),
+#          P4c (content 29%), P5c (meta 31%)
+composite_prompts:
+  - label: "Top 3 (persona + structure + texture)"
+    components: [P1c, P2d, P3b]
+    gen_params: P6d
+
+  - label: "Top 3 + meta"
+    components: [P1c, P2d, P3b, P5c]
+    gen_params: P6d
+
+  - label: "All 5 winners"
+    components: [P1c, P2d, P3b, P4c, P5c]
+    gen_params: P6d

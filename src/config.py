@@ -75,9 +75,11 @@ MAX_OUTPUT_TOKENS = 2048  # 500 words ≈ 650 tokens; headroom for formatting/pr
 MAX_REGENERATION_ATTEMPTS = 3
 
 # Retry logic for transient API failures (applies to both Gemini and detectors).
-# Backoff schedule: RETRY_BASE_DELAY_S * 2^retry  -->  2 s, 4 s, 8 s.
-MAX_RETRIES = 3
-RETRY_BASE_DELAY_S = 2.0
+# Backoff schedule: RETRY_BASE_DELAY_S * 2^retry  -->  3 s, 6 s, 12 s, 24 s, 48 s.
+# Note: Gemini 429s and ZeroGPT 500s override this with longer base delays
+# (30s and 15s respectively) because those errors persist for minutes.
+MAX_RETRIES = 5
+RETRY_BASE_DELAY_S = 3.0
 
 
 # ── Detection ──────────────────────────────────────────────────────────────────
@@ -98,8 +100,8 @@ DETECTION_PASS_THRESHOLD = 0.15  # completely_generated_prob < 0.15
 # ---------------------------------------------------------------------------
 
 RUNS_PER_VARIANT = 5          # N per ablation cell
-RUNS_PER_COMPOSITE = 10       # N per composite prompt test
-RATE_LIMIT_DELAY_S = 3.0      # Seconds between consecutive API calls
+RUNS_PER_COMPOSITE = 5        # N per composite prompt test
+RATE_LIMIT_DELAY_S = 5.0      # Seconds between consecutive API calls
 
 
 # ── Topics (control variable) ─────────────────────────────────────────────────

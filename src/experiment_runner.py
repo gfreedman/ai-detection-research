@@ -258,6 +258,45 @@ def _log_phase_summary(phase: str, records: list[RunRecord]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _load_completed_keys(path: Path, phase: str) -> set[tuple[str, str, str, int]]:
+    """
+    Scan the JSONL results file for already-completed experiment runs.
+
+    This enables **crash-resume**: if the experiment crashes mid-dimension
+    (e.g. due to API quota exhaustion), restarting the same command will
+    skip runs that already have results, avoiding duplicate records and
+    wasted API credits.
+
+    Each run is uniquely identified by the tuple
+    ``(dimension, variant_id, topic, run_index)``.  Corrupt JSON lines
+    are silently skipped so that a partially-written trailing line does
+    not prevent resumption.
+
+    @param path:  Path to the JSONL results file.
+    @param phase: Experiment phase to filter on (e.g. ``"ablation"``).
+    @returns:     A set of ``(dimension, variant_id, topic, run_index)``
+                  tuples for all completed runs in that phase.
+    """
+
+    keys: set[tuple[str, str, str, int]] = set()
+    if not path.exists():
+        return keys
+    with open(path) as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # skip corrupt/partial trailing lines
+            if r.get("phase") == phase:
+                keys.add((
+                    r.get("dimension", ""),
+                    r.get("variant_id", ""),
+                    r.get("topic", ""),
+                    r.get("run_index", -1),
+                ))
+    return keys
+
+
 class ExperimentRunner:
     """
     Runs the full experimental pipeline: generate -> detect -> log.
@@ -465,19 +504,28 @@ class ExperimentRunner:
         topics = topics or self._registry.topics
         variants = self._registry.get_dimension(dimension)
 
+        # Resume support: skip records already in the JSONL.
+        completed = _load_completed_keys(self._output_path, "ablation")
+
         records: list[RunRecord] = []
         total = len(variants) * len(topics) * n_runs
         done = 0
+        skipped = 0
 
         for variant in variants:
             for topic in topics:
                 for run in range(n_runs):
 
                     done += 1
+
+                    if (dimension, variant.id, topic, run) in completed:
+                        skipped += 1
+                        continue
+
                     logger.info(
-                        "[ablation %s/%s] topic=%s run=%d/%d (%d/%d total)",
+                        "[ablation %s/%s] topic=%s run=%d/%d (%d/%d total, %d skipped)",
                         dimension, variant.id, _short(topic),
-                        run + 1, n_runs, done, total,
+                        run + 1, n_runs, done, total, skipped,
                     )
 
                     user_prompt = variant.user_prompt(topic)
