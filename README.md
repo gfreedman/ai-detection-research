@@ -1,12 +1,38 @@
 # Adversarial Robustness of AI Text Detectors
 
-**Research Question:** How fragile are AI text detectors (GPTZero) to prompt engineering, and what linguistic features most influence detection?
+**Research Question:** How fragile are AI text detectors to prompt engineering, and what linguistic features most influence detection?
 
 This project systematically tests whether prompt engineering alone — without post-processing or paraphrasing tools — can reduce AI detection rates. It applies the same adversarial testing methodology used in security research (red-teaming, penetration testing) to understand what AI detectors actually measure and how easily those signals can be manipulated.
+
+## Key Findings
+
+700 experiments. Gemini 2.0 Flash generating 500-word essays. ZeroGPT as the detector.
+
+**Prompt engineering crushes temperature tuning.** Raising temperature from 0.7 to 1.5 only drops detection from 100% to 82%. A single prompt instruction ("vary sentence length dramatically") drops it to 9.5%.
+
+**Three prompt dimensions independently beat the 15% detection threshold:**
+
+| Rank | Variant | What it does | Mean AI % | Pass Rate | Cohen's d |
+|------|---------|-------------|-----------|-----------|-----------|
+| 1 | P3b — Varied sentence length | "Mix 4-word fragments with 35-word run-ons" | 9.5% | 84% | 3.80 |
+| 2 | P2d — Irregular paragraphs | "2-3 short paragraphs and one long rambling one" | 10.5% | 80% | 3.32 |
+| 3 | P1c — B+ student persona | System: "You write well but not perfectly" | 11.9% | 76% | 3.30 |
+
+**Combining winners is devastating.** Effects are additive — the more dimensions you stack, the lower detection goes:
+
+| Composite | Components | Mean AI % | Pass Rate |
+|-----------|-----------|-----------|-----------|
+| Top 3 | persona + structure + texture | 2.8% | **100%** |
+| Top 3 + meta | + "night before it's due" | 2.0% | **100%** |
+| All 5 winners | + obscure source reference | 1.2% | **100%** |
+
+See [`prompts/winning_prompts.md`](prompts/winning_prompts.md) for the exact prompt text, and [`notebooks/analysis.ipynb`](notebooks/analysis.ipynb) for the full statistical analysis with visualizations.
 
 ## Hypothesis
 
 AI text detectors primarily rely on **perplexity** (word predictability) and **burstiness** (variance in sentence complexity). Prompt engineering that increases lexical unpredictability and structural irregularity will reduce detection rates.
+
+**Verdict:** Supported. The two most effective dimensions — varied sentence length (burstiness) and irregular paragraphs (structural regularity) — directly target these signals. All effect sizes are large (Cohen's d > 3.0).
 
 ## Experimental Design
 
@@ -27,19 +53,15 @@ Prompts are organized into 6 tiers, each tested independently via ablation:
 
 - **5 fixed essay topics** tested with every prompt variant
 - **Target word count:** 450-550 words
-- **N >= 5 runs** per variant (N=10 for composites) — single runs prove nothing
-- **Human baselines** — real student essays run through GPTZero for false positive calibration
+- **N = 5 runs** per variant — single runs prove nothing
+- **Human baselines** — real student essays can be run through the detector for false positive calibration
 
 ### Statistical Rigor
 
 - **Cohen's d** effect sizes for each variant vs. its baseline
-- **Mann-Whitney U tests** for significance
-- **Cross-detector validation** against a second detector
-- **Per-topic breakdowns** to check consistency
-
-## Key Findings
-
-*Findings will be populated after running the full experiment pipeline. See `notebooks/analysis.ipynb` for the full analysis.*
+- **Mann-Whitney U tests** for significance (all p < 0.001 for top performers)
+- **Per-topic breakdowns** to check consistency across subject matter
+- **700 total experiment records** (625 ablation + 75 composite)
 
 ## Setup
 
@@ -47,12 +69,12 @@ Prompts are organized into 6 tiers, each tested independently via ablation:
 
 - Python 3.11+
 - A [Gemini API key](https://aistudio.google.com/apikey) (free tier is sufficient)
-- A [GPTZero API key](https://gptzero.me/docs)
+- A [ZeroGPT API key](https://zerogpt.com) (~$10 for sufficient credits)
 
 ### Installation
 
 ```bash
-git clone https://github.com/your-username/ai-detection-research.git
+git clone <repo-url>
 cd ai-detection-research
 python -m venv .venv
 source .venv/bin/activate
@@ -65,58 +87,51 @@ pip install -e ".[dev]"
 cp .env.example .env
 # Edit .env and add your API keys:
 #   GEMINI_API_KEY=your_key_here
-#   GPTZERO_API_KEY=your_key_here
+#   ZEROGPT_API_KEY=your_key_here
 ```
 
 ## Reproducing the Experiment
 
-### 1. Add Human Baselines
+### CLI (recommended)
 
-Place real student essays as `.txt` files in `data/human_baselines/`. One essay per file.
+```bash
+# Global flags (--detector, -v) must come BEFORE the subcommand
+python -m src --detector zerogpt -v sweep        # Phase 2: temperature sweep
+python -m src --detector zerogpt -v ablate \
+    --temperature 1.5 --top-p 1.0                # Phase 3: all ablations
+python -m src --detector zerogpt -v composite    # Phase 4: composite tests
+```
 
-### 2. Run the Full Pipeline
+### Python API
 
 ```python
 from src.gemini_client import GeminiClient
-from src.detector_client import GPTZeroClient
+from src.detector_client import ZeroGPTClient
 from src.prompt_registry import PromptRegistry
 from src.experiment_runner import ExperimentRunner
 
 gemini = GeminiClient()
-detector = GPTZeroClient()
+detector = ZeroGPTClient()
 registry = PromptRegistry()
 runner = ExperimentRunner(gemini, detector, registry)
 
-# Run everything in order:
-# 1. Human baselines → 2. Temperature sweep → 3. Ablations → 4. Composites
-results = runner.run_full_pipeline()
+# Run phases individually:
+runner.run_gen_params_sweep()                          # Phase 2
+runner.run_all_ablations(temperature=1.5, top_p=1.0)  # Phase 3
+runner.run_composites()                                # Phase 4
 ```
 
-Or run phases individually:
+### Crash Resume
 
-```python
-# Phase 1: Calibrate with human essays
-runner.run_human_baselines()
+Experiments automatically skip already-completed runs on restart. If a run crashes due to API quota exhaustion (common with both Gemini free tier and ZeroGPT), simply re-run the same command — it will pick up where it left off.
 
-# Phase 2: Find optimal temperature
-runner.run_gen_params_sweep()
-
-# Phase 3: Test each prompt dimension (use best temp from Phase 2)
-runner.run_all_ablations(temperature=1.0, top_p=0.95)
-
-# Phase 4: Combine winners (after updating taxonomy.yaml composite_prompts)
-runner.run_composites()
-```
-
-### 3. Analyze Results
-
-Open `notebooks/analysis.ipynb` in Jupyter:
+### Analyze Results
 
 ```bash
 jupyter notebook notebooks/analysis.ipynb
 ```
 
-Results are logged to `data/raw_results.jsonl` (append-only, one JSON object per run).
+Results are logged to `data/raw_results.jsonl` (append-only, one JSON object per run). The included dataset contains all 700 records from our experiment.
 
 ## Running Tests
 
@@ -124,35 +139,39 @@ Results are logged to `data/raw_results.jsonl` (append-only, one JSON object per
 pytest tests/ -v
 ```
 
+79 tests covering all modules. All tests use mocks — no API keys needed.
+
 ## Project Structure
 
 ```
 ai-detection-research/
 ├── src/
+│   ├── __main__.py            # CLI entrypoint
 │   ├── config.py              # Central config: thresholds, models, retry logic
 │   ├── gemini_client.py       # Gemini wrapper with retry + word count validation
-│   ├── detector_client.py     # Abstract base + GPTZero implementation
-│   ├── experiment_runner.py   # Orchestrator: generate → detect → log
+│   ├── detector_client.py     # Abstract base + ZeroGPT/GPTZero implementations
+│   ├── experiment_runner.py   # Orchestrator: generate -> detect -> log
 │   ├── prompt_registry.py     # Loads taxonomy.yaml into runnable prompt configs
 │   └── analysis.py            # Score aggregation, stats, export helpers
 ├── prompts/
-│   └── taxonomy.yaml          # All prompt variants defined as structured data
+│   ├── taxonomy.yaml          # All prompt variants defined as structured data
+│   └── winning_prompts.md     # The exact prompts that work best
 ├── data/
 │   ├── human_baselines/       # Real student essays (control group)
-│   ├── raw_results.jsonl      # Experimental output (append-only)
-│   └── summary.csv            # Aggregated results
+│   └── raw_results.jsonl      # 700 experiment records
 ├── notebooks/
-│   └── analysis.ipynb         # Reproducible analysis + visualizations
-└── tests/                     # Unit tests for all modules
+│   └── analysis.ipynb         # Full analysis with visualizations
+└── tests/                     # 79 unit tests (fully mocked)
 ```
 
 ## Limitations
 
-- **Single LLM family:** Tested with Gemini models only. Results may not transfer to GPT-4, Claude, or Llama.
-- **English only:** All prompts and topics are in English. Detectors may behave differently for other languages.
+- **Single detector:** Tested against ZeroGPT only. Results may not transfer to GPTZero, Originality.ai, or other detectors. Cross-detector validation is an important next step.
+- **Single LLM family:** Tested with Gemini 2.0 Flash only. Results may differ for GPT-4, Claude, or Llama.
+- **English only:** All prompts and topics are in English.
 - **Essay genre only:** Tested with 500-word high school essays. Detector behavior on code, creative writing, or technical prose may differ.
-- **GPTZero-primary:** GPTZero is the primary detector. Cross-validation with a second detector is included but not exhaustive.
-- **Point-in-time snapshot:** Detectors are constantly updated. These results reflect the detector behavior at the time of testing.
+- **No human baselines:** We did not collect real student essays for false positive calibration. The framework supports this (add `.txt` files to `data/human_baselines/`).
+- **Point-in-time snapshot:** Detectors are constantly updated. These results reflect ZeroGPT's behavior at the time of testing (February 2026).
 
 ## Ethics Statement
 
