@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 
 from src import config
 from src.detector_client import GPTZeroClient, ZeroGPTClient
