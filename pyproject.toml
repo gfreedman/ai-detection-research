@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "ai-detection-research"
 version = "0.1.0"
 description = "Adversarial robustness testing of AI text detectors"
+license = "MIT"
+authors = [{name = "Geoff Freedman"}]
 requires-python = ">=3.11"
 dependencies = [
     "google-genai>=1.0.0",

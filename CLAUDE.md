@@ -1,8 +1,14 @@
 # CLAUDE.md — Adversarial Robustness of AI Text Detectors
 
+> **Note:** This is the original design document written before implementation began.
+> The project was planned around GPTZero, but we pivoted to **ZeroGPT** after
+> discovering that GPTZero's API pricing was prohibitive for the experiment scale.
+> All references to GPTZero below reflect the original plan — see `README.md` for
+> the actual methodology and results using ZeroGPT.
+
 ## Research Question
 
-**How fragile are AI text detectors (GPTZero) to prompt engineering, and what linguistic features most influence detection?**
+**How fragile are AI text detectors to prompt engineering, and what linguistic features most influence detection?**
 
 This is adversarial robustness research — the same class of work as red-teaming LLMs or testing spam filters. The goal is to understand *what detectors actually measure* and *how easily those signals can be manipulated*, not to enable cheating.
 
