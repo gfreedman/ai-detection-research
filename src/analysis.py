@@ -364,8 +364,8 @@ def human_baseline_summary(df: pd.DataFrame) -> pd.DataFrame:
     Summarise detector scores on human-written essays.
 
     Reports the false-positive rate (percentage of human essays flagged as AI)
-    which contextualises all other detection results.  If GPTZero flags 30% of
-    human essays, "passing" is less impressive.
+    which contextualises all other detection results.  If the detector flags 30%
+    of human essays, "passing" is less impressive.
 
     @param df: A DataFrame of experiment results.
     @returns:  A single-row DataFrame with ``n_essays``, ``mean_ai_prob``,

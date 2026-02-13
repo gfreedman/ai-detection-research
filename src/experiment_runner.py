@@ -427,18 +427,27 @@ class ExperimentRunner:
         gp_variants = self._registry.get_gen_params_variants()
         baseline_prompt = self._registry.get_baseline("persona")
 
+        # Resume support: skip records already in the JSONL.
+        completed = _load_completed_keys(self._output_path, "gen_params_sweep")
+
         records: list[RunRecord] = []
         total = len(gp_variants) * len(topics) * n_runs
         done = 0
+        skipped = 0
 
         for gp in gp_variants:
             for topic in topics:
                 for run in range(n_runs):
 
                     done += 1
+
+                    if ("gen_params", gp.id, topic, run) in completed:
+                        skipped += 1
+                        continue
+
                     logger.info(
-                        "[gen_params %s] topic=%s run=%d/%d (%d/%d total)",
-                        gp.id, _short(topic), run + 1, n_runs, done, total,
+                        "[gen_params %s] topic=%s run=%d/%d (%d/%d total, %d skipped)",
+                        gp.id, _short(topic), run + 1, n_runs, done, total, skipped,
                     )
 
                     user_prompt = baseline_prompt.user_prompt(topic)
@@ -624,19 +633,29 @@ class ExperimentRunner:
             logger.warning("No composite prompts defined -- skipping.")
             return []
 
+        # Resume support: skip records already in the JSONL.
+        completed = _load_completed_keys(self._output_path, "composite")
+
         records: list[RunRecord] = []
         total = len(composites) * len(topics) * n_runs
         done = 0
+        skipped = 0
 
         for ci, comp in enumerate(composites):
             for topic in topics:
                 for run in range(n_runs):
 
                     done += 1
+                    variant_id = f"composite_{ci}"
+
+                    if ("composite", variant_id, topic, run) in completed:
+                        skipped += 1
+                        continue
+
                     logger.info(
-                        "[composite %d/%d '%s'] topic=%s run=%d/%d (%d/%d total)",
+                        "[composite %d/%d '%s'] topic=%s run=%d/%d (%d/%d total, %d skipped)",
                         ci + 1, len(composites), comp.label,
-                        _short(topic), run + 1, n_runs, done, total,
+                        _short(topic), run + 1, n_runs, done, total, skipped,
                     )
 
                     user_prompt = comp.user_prompt(topic)
@@ -656,7 +675,7 @@ class ExperimentRunner:
                     record = _build_record(
                         phase="composite",
                         dimension="composite",
-                        variant_id=f"composite_{ci}",
+                        variant_id=variant_id,
                         variant_label=comp.label,
                         topic=topic,
                         run_index=run,

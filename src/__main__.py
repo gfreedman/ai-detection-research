@@ -1,18 +1,19 @@
 """
 CLI entrypoint for running experiments.
 
+Global flags (``--detector``, ``-v``) must come **before** the subcommand.
+
 Usage::
 
-    python -m src baselines                     # Phase 1
-    python -m src sweep                         # Phase 2
-    python -m src ablate                        # Phase 3 (all dimensions)
-    python -m src ablate --dimension persona    # Phase 3 (one dimension)
-    python -m src composite                     # Phase 4
-    python -m src full                          # All phases sequentially
-    python -m src full --temperature 1.0        # Override sweep auto-select
+    python -m src --detector zerogpt -v sweep                        # Phase 2
+    python -m src --detector zerogpt -v ablate                       # Phase 3 (all)
+    python -m src --detector zerogpt -v ablate --dimension persona   # Phase 3 (one)
+    python -m src --detector zerogpt -v ablate --temperature 1.5     # Phase 3 (fixed temp)
+    python -m src --detector zerogpt -v composite                    # Phase 4
+    python -m src --detector zerogpt -v full                         # All phases
 
-    # Use ZeroGPT instead of GPTZero:
-    python -m src sweep --detector zerogpt
+    # GPTZero is also supported if you have an API key:
+    python -m src --detector gptzero -v sweep
 """
 
 from __future__ import annotations
@@ -106,8 +107,8 @@ def main() -> None:
     parser.add_argument(
         "--detector",
         choices=["gptzero", "zerogpt"],
-        default="gptzero",
-        help="Which detector to use (default: gptzero)",
+        default="zerogpt",
+        help="Which detector to use (default: zerogpt)",
     )
     parser.add_argument(
         "-v", "--verbose",

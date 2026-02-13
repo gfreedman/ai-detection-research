@@ -38,16 +38,18 @@ AI text detectors primarily rely on **perplexity** (word predictability) and **b
 
 ### Prompt Taxonomy (Independent Variables)
 
-Prompts are organized into 6 tiers, each tested independently via ablation:
+Prompts are organized into 6 tiers, each tested independently via ablation.
+
+**Variant ID scheme:** IDs follow the pattern `PxY` where `x` is the tier number (1-6) and `Y` is the variant letter. Variant `a` is always the baseline (no modification). For example, `P3b` = Tier 3 (Texture), variant b (varied sentence length). See [`prompts/taxonomy.yaml`](prompts/taxonomy.yaml) for the full definition of every variant.
 
 | Tier | Dimension | Variants | What it tests |
 |------|-----------|----------|---------------|
-| 1 | Voice & Persona | 4 | Does adopting a student persona reduce detection? |
-| 2 | Structure | 4 | Does non-standard essay structure help? |
-| 3 | Linguistic Texture | 5 | Do hedging, errors, varied sentence length affect scores? |
-| 4 | Content Specificity | 4 | Do personal anecdotes or obscure references help? |
-| 5 | Meta-Instructions | 4 | Does "write like a human" actually work? |
-| 6 | Generation Parameters | 4 | How does temperature/top_p affect detection? |
+| 1 | Voice & Persona | P1a-P1d | Does adopting a student persona reduce detection? |
+| 2 | Structure | P2a-P2d | Does non-standard essay structure help? |
+| 3 | Linguistic Texture | P3a-P3e | Do hedging, errors, varied sentence length affect scores? |
+| 4 | Content Specificity | P4a-P4d | Do personal anecdotes or obscure references help? |
+| 5 | Meta-Instructions | P5a-P5d | Does "write like a human" actually work? |
+| 6 | Generation Parameters | P6a-P6d | How does temperature/top_p affect detection? |
 
 ### Controls
 
@@ -163,6 +165,8 @@ ai-detection-research/
 │   └── analysis.ipynb         # Full analysis with visualizations
 └── tests/                     # 79 unit tests (fully mocked)
 ```
+
+For the full experimental design rationale, hypothesis development, and implementation plan, see [`CLAUDE.md`](CLAUDE.md).
 
 ## Limitations
 
